@@ -151,6 +151,27 @@ bool Sat::CheckEnvironment() {
     logprintf(7, "Log: Defaulting to %d copy threads\n", memory_threads_);
   }
 
+  if (strcmp(dax_device_, "")) {
+    if (address_mode_ == 32) {
+      logprintf(0, "Process Error: 32-bit address mode not supported for DAX "
+                "devices.\n");
+      return false;
+    }
+
+    if (os_->DiscoverDaxDevSize()) {
+      logprintf(0, "Fatal Error: cannot discover size of the dax device "
+               "%s\n", dax_device_);
+      return false;
+    }
+
+    // Validate 2mb dax alignment.
+    if (size_mb_ && (size_mb_ & 1)) {
+      logprintf(0, "Fatal Error: size_mb (%ldMiB) is not a multiple of 2MiB "
+                "(DAX dev alignment)\n", size_mb_);
+      return false;
+    }
+  }
+
   // Use all memory if no size is specified.
   if (size_mb_ == 0)
     size_mb_ = os_->FindFreeMemSize() / kMegabyte;
@@ -599,6 +620,9 @@ bool Sat::Initialize() {
     os_->SetDramMappingParams(channel_hash_, channel_width_, &channels_);
   }
 
+  if (strcmp(dax_device_, ""))
+      os_->SetDaxDevice(dax_device_);
+
   if (!os_->Initialize()) {
     logprintf(0, "Process Error: Failed to initialize OS layer\n");
     bad_status();
@@ -742,6 +766,7 @@ Sat::Sat() {
   os_ = 0;
   patternlist_ = 0;
   logfilename_[0] = 0;
+  dax_device_[0] = 0;
 
   read_block_size_ = 512;
   write_block_size_ = -1;
@@ -996,6 +1021,8 @@ bool Sat::ParseArgs(int argc, char **argv) {
       continue;
     }
 
+    ARG_SVALUE("-D", dax_device_);
+
     // Default:
     PrintVersion();
     PrintHelp();
@@ -1167,7 +1194,8 @@ void Sat::PrintHelp() {
          " --channel_width bits     width in bits of each memory channel\n"
          " --memory_channel u1,u2   defines a comma-separated list of names "
          "for dram packages in a memory channel. Use multiple times to "
-         "define multiple channels.\n");
+         "define multiple channels\n"
+         " -D dax_device    specify dax device to use as memory.\n");
 }
 
 bool Sat::CheckGoogleSpecificArgs(int argc, char **argv, int *i) {

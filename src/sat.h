@@ -221,6 +221,9 @@ class Sat {
   int cpu_freq_round_;                // Round the computed frequency to this
                                       // value.
 
+  // DAX option.
+  char dax_device_[255];              // DAX device to use as memory.
+
   // Thread control.
   int file_threads_;                  // Threads of file IO.
   int net_threads_;                   // Threads of network IO.

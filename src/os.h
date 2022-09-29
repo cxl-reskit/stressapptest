@@ -85,6 +85,14 @@ class OsLayer {
     channels_ = channels;
   }
 
+  // Set the dax device name.
+  void SetDaxDevice(const string& dax_device) {
+      dax_device_ = dax_device;
+  }
+
+  // Find the size of the dax device.
+  int DiscoverDaxDevSize();
+
   // Initializes data strctures and open files.
   // Returns false on error.
   virtual bool Initialize();
@@ -297,6 +305,9 @@ class OsLayer {
   // Find the free memory on the machine.
   virtual int64 FindFreeMemSize();
 
+  // Helper function to mmap DAX device.
+  void* MapDaxMemory(int64 length);
+
   // Allocates test memory of length bytes.
   // Subclasses must implement this.
   // Call PepareTestMem to get a pointer.
@@ -405,6 +416,10 @@ class OsLayer {
 
 
   time_t time_initialized_;      // Start time of test.
+
+  string dax_device_;            // DAX device name to use as memory.
+  size_t dax_dev_size_;          // DAX device size.
+  size_t dax_fd_;                // DAX fd.
 
   vector<cpu_set_t> cpu_sets_;   // Cache for cpu masks.
   vector<bool> cpu_sets_valid_;  // If the cpu mask cache is valid.

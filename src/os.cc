@@ -22,6 +22,7 @@
 
 #include <errno.h>
 #include <fcntl.h>
+#include <limits.h>
 #include <linux/types.h>
 #include <malloc.h>
 #include <stdio.h>
@@ -32,6 +33,8 @@
 #include <sys/time.h>
 #include <sys/types.h>
 #include <sys/ipc.h>
+#include <sys/stat.h>
+#include <sys/sysmacros.h>
 #ifdef HAVE_SYS_SHM_H
 #include <sys/shm.h>
 #endif
@@ -93,6 +96,68 @@ OsLayer::~OsLayer() {
     delete error_diagnoser_;
   if (clock_)
     delete clock_;
+}
+
+// This is inspired by https://github.com/jagalactic/cursor_heap.git
+// may need to refactor later to use libdaxctl or libndctl when those
+// mature.
+// TODO DAX: This probably compiles only on linux, due to sysmacros.h
+// dep, fix that using configure when refactoring for upstream.
+int OsLayer::DiscoverDaxDevSize() {
+  char spath[PATH_MAX];
+  char npath[PATH_MAX];
+  char *rpath, *bname;
+  FILE *sfile;
+  uint64 size;
+  struct stat st;
+  int rc;
+
+  rc = stat(dax_device_.c_str(), &st);
+  if (rc < 0) {
+    logprintf(0, "%s: failed to stat file %s (%s)\n",
+              __func__, dax_device_.c_str(), strerror(errno));
+    return -errno;
+  }
+
+  snprintf(spath, PATH_MAX, "/sys/dev/char/%d:%d/subsystem",
+           major(st.st_rdev), minor(st.st_rdev));
+
+  rpath = realpath(spath, npath);
+  if (!rpath) {
+    logprintf(0, "%s: realpath on %s failed (%s)\n",
+              __func__, spath, strerror(errno));
+    return -errno;
+  }
+
+  /* Check if DAX device */
+  bname = strrchr(rpath, '/');
+  if (!bname || strcmp("dax", bname + 1)) {
+    logprintf(0, "%s: %s not a DAX device!\n",
+              __func__, dax_device_.c_str());
+  }
+
+  snprintf(spath, PATH_MAX, "/sys/dev/char/%d:%d/size",
+           major(st.st_rdev), minor(st.st_rdev));
+
+  sfile = fopen(spath, "r");
+  if (!sfile) {
+    logprintf(0, "%s: fopen on %s failed (%s)\n",
+              __func__, spath, strerror(errno));
+    return -EINVAL;
+  }
+
+  rc = fscanf(sfile, "%llu", &size);
+  if (rc < 0) {
+    logprintf(0, "%s: fscanf on %s failed (%s)\n",
+              __func__, spath, strerror(errno));
+    fclose(sfile);
+    return -EINVAL;
+  }
+
+  fclose(sfile);
+  dax_dev_size_ = static_cast<size_t>(size);
+
+  return 0;
 }
 
 // OsLayer initialization.
@@ -413,6 +478,11 @@ int64 OsLayer::FindFreeMemSize() {
   if (totalmemsize_ > 0)
     return totalmemsize_;
 
+  if (!dax_device_.empty()) {
+      totalmemsize_ = dax_dev_size_;
+      return totalmemsize_;
+  }
+
   int64 pages = sysconf(_SC_PHYS_PAGES);
   int64 avpages = sysconf(_SC_AVPHYS_PAGES);
   int64 pagesize = sysconf(_SC_PAGESIZE);
@@ -502,6 +572,32 @@ int64 OsLayer::AllocateAllMem() {
     return 0;
 }
 
+// Map the dax device.
+void* OsLayer::MapDaxMemory(int64 length) {
+  dax_fd_ = open(dax_device_.c_str(), O_RDWR);
+  if (dax_fd_ < 0) {
+    int err = errno;
+    string errortxt = ErrorString(err);
+    logprintf(0, "Log: failed to open %s - err %d (%s)\n",
+              dax_device_.c_str(), err, errortxt.c_str());
+    return nullptr;
+  }
+
+  void *mapbuf = mmap(NULL, length, PROT_READ | PROT_WRITE,
+                      MAP_SHARED, dax_fd_, 0);
+  if (mapbuf == MAP_FAILED) {
+    int err = errno;
+    string errortxt = ErrorString(err);
+    logprintf(0, "Log: failed to map %s - err %d (%s)\n",
+              dax_device_.c_str(), err, errortxt.c_str());
+    close(dax_fd_);
+    return nullptr;
+  }
+
+  return mapbuf;
+}
+
+//
 // Allocate the target memory. This may be from malloc, hugepage pool
 // or other platform specific sources.
 bool OsLayer::AllocateTestMem(int64 length, uint64 paddr_base) {
@@ -509,6 +605,20 @@ bool OsLayer::AllocateTestMem(int64 length, uint64 paddr_base) {
   void *buf = 0;
 
   sat_assert(length >= 0);
+
+  // Use DAX device as memory.
+  if (!dax_device_.empty()) {
+    testmem_ = MapDaxMemory(length);
+    if (testmem_ == 0) {
+      testmemsize_ = 0;
+      logprintf(0, "Log: Device Mapping failed for the DAX device\n");
+      return false;
+    } else {
+      testmemsize_ = length;
+      logprintf(0, "Log: Using mmaped DAX device as memory at %p.\n", testmem_);
+      return true;
+    }
+  }
 
   if (paddr_base)
     logprintf(0, "Process Error: non zero paddr_base %#llx is not supported,"
@@ -690,6 +800,9 @@ void OsLayer::FreeTestMem() {
       close(shmid_);
     } else if (mmapped_allocation_) {
       munmap(testmem_, testmemsize_);
+    } else if (!dax_device_.empty()) {
+      munmap(testmem_, testmemsize_);
+      close(dax_fd_);
     } else {
       free(testmem_);
     }
