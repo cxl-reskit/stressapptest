@@ -6,6 +6,7 @@ It tries to maximize randomized traffic to memory from processor and I/O, with t
 
 Discussion group: https://groups.google.com/d/forum/stressapptest-discuss
 
+NOTE: This version of stressapptest supports testing CXL memory devices in devdax mode.
 
 ## Usage
 
@@ -23,6 +24,7 @@ Common arguments
 * --listen : run a thread to listen for and respond to network threads. (0)
 * -f filename : add a disk thread with tempfile 'filename' (none)
 * -F : don't result check each transaction, use libc memcpy instead. (false)
+* -D dax-device : test memory from 'dax-device', which is memory configured in devdax mode. (none)
 
 Error handling
 * -l logfile : log output to file 'logfile' (none)
